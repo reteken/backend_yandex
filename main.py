@@ -1,17 +1,21 @@
-from fastapi import FastAPI, Depends, WebSocket, HTTPException, Request
+from fastapi import FastAPI, Depends, WebSocket, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 import uuid
 import logging
 import os
+import json
+import asyncio
 from database import SessionLocal, init_db
 from models import User, Message
 from manager import manager
 from schemas import UserCreate, Token
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,6 +43,9 @@ app.add_middleware(
 
 init_db()
 
+# Глобальная очередь сообщений
+message_queue = asyncio.Queue()
+
 
 def get_db():
     db = SessionLocal()
@@ -46,6 +53,11 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+class MessageRequest(BaseModel):
+    message: str
+    sender: str
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -67,7 +79,7 @@ async def login_page(request: Request):
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_page(request: Request):
     return templates.TemplateResponse(
-        "chat_page.html",  # Создайте этот файл в templates/
+        "chat_page.html",
         {"request": request},
     )
 
@@ -99,15 +111,45 @@ async def generate_guest_id():
 
 @app.get("/messages")
 async def get_messages(db: Session = Depends(get_db)):
-    messages = db.query(Message).order_by(Message.timestamp).all()
+    messages = db.query(Message).order_by(Message.timestamp.desc()).limit(50).all()
     return [
         {
             "sender": msg.sender,
             "content": msg.content,
             "timestamp": msg.timestamp.isoformat(),
         }
-        for msg in messages
+        for msg in reversed(messages)
     ]
+
+
+@app.post("/send_message")
+async def send_message(request: MessageRequest, db: Session = Depends(get_db)):
+    new_message = Message(
+        sender=request.sender, content=request.message, timestamp=datetime.now()
+    )
+    db.add(new_message)
+    db.commit()
+
+    await message_queue.put({"sender": request.sender, "content": request.message})
+    return {"status": "ok"}
+
+
+@app.get("/get_messages")
+async def get_messages_stream(last_id: int = 0):
+    async def message_generator():
+        current_id = last_id
+        while True:
+            if not message_queue.empty():
+                message = await message_queue.get()
+                current_id += 1
+                yield f"data: {json.dumps({'id': current_id, **message})}\n\n"
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        message_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @app.websocket("/ws/chat")
@@ -115,15 +157,24 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
     await manager.connect(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
-            if not data.strip():
-                continue
+            raw_data = await websocket.receive_text()
+            try:
+                data = json.loads(raw_data)
+                sender = data.get("sender", "Аноним")
+                message = data.get("message", "").strip()
 
-            sender = data.split(": ", 1)[0] if ": " in data else "Аноним"
-            msg = Message(content=data, sender=sender)
-            db.add(msg)
-            db.commit()
-            await manager.broadcast(data)
+                if not message:
+                    continue
+
+                # Сохранение в БД
+                db_message = Message(content=f"{sender}: {message}", user_id=None)
+                db.add(db_message)
+                db.commit()
+
+                # Отправка всем
+                await manager.broadcast(f"{sender}: {message}")
+            except json.JSONDecodeError:
+                await manager.broadcast("Ошибка: Неверный формат сообщения")
     except Exception as e:
         manager.disconnect(websocket)
         logger.error(f"WebSocket error: {e}")
