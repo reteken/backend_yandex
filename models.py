@@ -33,7 +33,9 @@ class User(Base):
 class Chat(Base):
     __tablename__ = "chats"
     id = Column(Integer, primary_key=True)
-    name = Column(String(100))
+    name = Column(String(100), unique=True)  # Добавляем unique
+    path = Column(String(200))  # Добавляем недостающее поле
+    created_at = Column(DateTime, default=datetime.utcnow)  # Добавляем поле времени
     members = relationship("User", secondary=chat_members, back_populates="chats")
     messages = relationship("Message", back_populates="chat")
 
