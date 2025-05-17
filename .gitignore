@@ -4,3 +4,8 @@
 /templates
 /tester.py
 /__pycache__
+/nginx.conf
+/Dockerfile
+/docker-compose.yml
+/deploy.sh
+/Code   nginx

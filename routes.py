@@ -14,7 +14,6 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Инициализация БД
 init_db()
 
 # Пароли
@@ -77,7 +76,6 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
     try:
         while True:
             data = await websocket.receive_text()
-            # Сохранить сообщение в БД
             message_data = data.split(": ", 1)
             if len(message_data) == 2:
                 sender, content = message_data

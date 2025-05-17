@@ -24,6 +24,9 @@ import asyncio
 from starlette.background import BackgroundTask
 from contextlib import asynccontextmanager
 
+from fastapi import Body, Query, status
+from pydantic import BaseModel, Field
+
 from database import SessionLocal, init_db
 from models import User, Message, Chat, Base
 from schemas import UserCreate, ChatCreate, MessageCreate
@@ -63,19 +66,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Настройки JWT
 SECRET_KEY = "your-secret-key-123"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Настройки шаблонов
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount(
     "/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -266,9 +266,25 @@ async def get_chats(
     return all_chats
 
 
-@app.post("/send_message")
+@app.post(
+    "/send_message",
+    summary="Отправить сообщение в чат",
+    response_model=dict,
+    responses={
+        200: {
+            "description": "Сообщение отправлено",
+            "content": {"example": {"status": "ok"}},
+        },
+        404: {
+            "description": "Чат не найден",
+            "content": {"example": {"detail": "Chat not found"}},
+        },
+    },
+)
 async def send_message(
-    message: MessageCreate,
+    message: MessageCreate = Body(
+        ..., example={"content": "Привет!", "chat_id": 1, "is_anonymous": False}
+    ),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user),
 ):
